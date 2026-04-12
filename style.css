@@ -1,0 +1,140 @@
+/* SToolBook - 工具函数编辑器样式 */
+
+/* ---- 面板整体（直接在 .inline-drawer 内部，与 .inline-drawer-content 平级）---- */
+.stoolbook_panel {
+    width: 100%;
+    padding: 5px 0;
+    border-top: 1px solid var(--SmartThemeBorderColor, #555);
+}
+
+/* ---- 工具栏：左右布局 ---- */
+.stoolbook_toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    margin-bottom: 4px;
+}
+
+/* ---- 开关标签 ---- */
+.stoolbook_toggle_label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.stoolbook_toggle {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--SmartThemeQuoteColor, #5bc0de);
+}
+
+/* ---- 保存按钮 ---- */
+.stoolbook_save_btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.9);
+    padding: 2px 8px;
+}
+
+/* ---- 代码编辑器 textarea ---- */
+.stoolbook_code_editor {
+    width: 100%;
+    min-height: 120px;
+    max-height: 500px;
+    resize: vertical;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: calc(var(--mainFontSize, 14px) * 0.9);
+    line-height: 1.5;
+    tab-size: 4;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+}
+
+/* ============================================================
+   回合合并 —— Turn Merging（内嵌在 display_text 中的样式）
+   ============================================================ */
+
+/* 内联工具调用摘要（折叠态） */
+.stoolbook-tool-summary {
+    margin: 0.6em 0;
+    padding: 6px 10px;
+    border-left: 3px solid var(--SmartThemeQuoteColor, #5bc0de);
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
+    border-radius: 4px;
+    font-size: calc(var(--mainFontSize, 14px) * 0.9);
+}
+
+.stoolbook-tool-summary > summary {
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+    color: var(--SmartThemeQuoteColor, #5bc0de);
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    list-style: none;
+}
+
+.stoolbook-tool-summary > summary::-webkit-details-marker {
+    display: none;
+}
+
+.stoolbook-tool-summary > summary::before {
+    content: '▸';
+    font-size: 0.85em;
+    transition: transform 0.15s ease;
+}
+
+.stoolbook-tool-summary[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.stoolbook-tool-summary > summary i {
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+
+/* 工具详情区 */
+.stoolbook-tool-details {
+    padding: 4px 0;
+}
+
+.stoolbook-tool-label {
+    font-size: calc(var(--mainFontSize, 14px) * 0.8);
+    font-weight: 600;
+    opacity: 0.7;
+    margin: 6px 0 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.stoolbook-tool-invocation pre {
+    margin: 2px 0 6px;
+    padding: 6px 8px;
+    background: var(--SmartThemeCodeColor, rgba(0, 0, 0, 0.15));
+    border-radius: 3px;
+    overflow-x: auto;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.stoolbook-tool-invocation code {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: calc(var(--mainFontSize, 14px) * 0.85);
+    white-space: pre;
+}
+
+/* 设置面板补充 */
+.stoolbook_settings .checkbox_label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
