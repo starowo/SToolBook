@@ -613,6 +613,7 @@ const EXTENSION_PATH = 'third-party/SToolBook';
 const DEFAULT_SETTINGS = {
     turnMerging: false,
     pinNewestTurn: false,
+    reasoningPassback: false,
     debugMode: false,
 };
 
@@ -993,6 +994,31 @@ function pinNewestTurnToBottom(data) {
     debugLog(`pinNewestTurn: 已将 ${loopMessages.length} 条 tool loop 消息置底`);
 }
 
+// ---------- DeepSeek reasoning_content 回传修复 ----------
+
+/**
+ * 将 tool_calls 消息上的 reasoning 字段映射为 reasoning_content，
+ * 使 DeepSeek reasoner 的思考内容能正确回传给 API。
+ * 后端 addReasoningContentToToolCalls 检查 'reasoning_content' in message，
+ * 已存在则跳过，因此我们在前端设好真实值后后端不会覆盖为空字符串。
+ * 对非 DeepSeek API 无副作用（未知字段会被忽略）。
+ */
+function passbackReasoningContent(data) {
+    const chat = data?.chat;
+    if (!chat?.length) return;
+
+    let count = 0;
+    for (const msg of chat) {
+        if (msg.tool_calls && !('reasoning_content' in msg)) {
+            msg.reasoning_content = msg.reasoning || '';
+            count++;
+        }
+    }
+    if (count > 0) {
+        debugLog(`passbackReasoningContent: 已为 ${count} 条 tool_calls 消息设置 reasoning_content`);
+    }
+}
+
 // ---------- Debug mode: 5-click 解锁 ----------
 
 function setupDebugUnlock() {
@@ -1052,6 +1078,14 @@ function setupDebugUnlock() {
         $('#stoolbook_pin_newest_turn').on('change', function () {
             const ext = SillyTavern.getContext().extensionSettings;
             ext[MODULE_NAME].pinNewestTurn = $(this).prop('checked');
+            saveSettingsDebounced();
+        });
+
+        // 绑定: 回传推理内容开关
+        $('#stoolbook_reasoning_passback').prop('checked', settings.reasoningPassback);
+        $('#stoolbook_reasoning_passback').on('change', function () {
+            const ext = SillyTavern.getContext().extensionSettings;
+            ext[MODULE_NAME].reasoningPassback = $(this).prop('checked');
             saveSettingsDebounced();
         });
 
@@ -1115,7 +1149,11 @@ function setupDebugUnlock() {
 
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (data) => {
         if (data?.dryRun) return;
-        if (!getSettings().pinNewestTurn) return;
-        pinNewestTurnToBottom(data);
+        if (getSettings().reasoningPassback) {
+            passbackReasoningContent(data);
+        }
+        if (getSettings().pinNewestTurn) {
+            pinNewestTurnToBottom(data);
+        }
     });
 })();
