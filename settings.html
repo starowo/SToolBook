@@ -5,11 +5,15 @@
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <label class="checkbox_label" for="stoolbook_turn_merging" title="将多步工具调用的消息合并为单条消息显示，工具结果以可折叠行内嵌推理块中">
+            <label class="checkbox_label" for="stoolbook_seamless_tool_loop" title="接管工具调用循环：整轮只产生一条消息，利用 continue 预填充无缝续写。开启后下方合并/置底自动失效">
+                <input type="checkbox" id="stoolbook_seamless_tool_loop" />
+                <span data-i18n="无缝工具循环">无缝工具循环 (Seamless)</span>
+            </label>
+            <label class="checkbox_label stoolbook_sub_option" for="stoolbook_turn_merging" title="将多步工具调用的消息合并为单条消息显示，工具结果以可折叠行内嵌推理块中">
                 <input type="checkbox" id="stoolbook_turn_merging" />
                 <span data-i18n="合并工具调用回合">合并工具调用回合</span>
             </label>
-            <label class="checkbox_label" for="stoolbook_pin_newest_turn" title="将最新回合（user/assistant/tool）置于 prompt 最底部，防止被 jailbreak 等注入打断工具调用循环">
+            <label class="checkbox_label stoolbook_sub_option" for="stoolbook_pin_newest_turn" title="将最新回合（user/assistant/tool）置于 prompt 最底部，防止被 jailbreak 等注入打断工具调用循环">
                 <input type="checkbox" id="stoolbook_pin_newest_turn" />
                 <span data-i18n="置底最新回合">置底最新回合</span>
             </label>

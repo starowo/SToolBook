@@ -611,6 +611,7 @@ function onWorldInfoActivated(activatedList) {
 const EXTENSION_PATH = 'third-party/SToolBook';
 
 const DEFAULT_SETTINGS = {
+    seamlessToolLoop: false,
     turnMerging: false,
     pinNewestTurn: false,
     reasoningPassback: false,
@@ -674,7 +675,12 @@ function identifyTurns() {
     while (i < chat.length) {
         const msg = chat[i];
 
-        if (msg?.extra?.stoolbook_merged) { i++; continue; }
+        // 已合并的消息：若后面紧跟新的工具系统消息（swipe 重新生成了工具调用），
+        // 不跳过，视为需要重新合并的新回合；否则跳过
+        if (msg?.extra?.stoolbook_merged) {
+            const followedByTool = i + 1 < chat.length && isToolSystemMessage(chat[i + 1]);
+            if (!followedByTool) { i++; continue; }
+        }
 
         if (isAssistantMessage(msg) && i + 1 < chat.length && isToolSystemMessage(chat[i + 1])) {
             const turn = { startIdx: i, endIdx: i, parts: [{ idx: i, type: 'assistant' }] };
@@ -735,28 +741,33 @@ function buildToolSummaryHtml(invocations) {
     const toolNames = invocations.map(i => i.displayName || i.name);
     const grouped = groupToolNames(toolNames);
 
-    let html = `<details class="stoolbook-tool-summary">\n`;
-    html += `<summary><i class="fa-solid fa-screwdriver-wrench"></i> Tool: ${escapeHtml(grouped)}</summary>\n`;
-    html += `<div class="stoolbook-tool-details">\n`;
+    // 整块 HTML 不能有换行符——Showdown 的 simpleLineBreaks 会把 \n 转成 <br>，
+    // 插到 <details> 和 <summary> 之间会破坏原生 toggle 行为。
+    // <pre> 内的换行由 escapeHtml 编码的内容自带，不受影响。
+    const parts = [];
+    parts.push(`<details class="stoolbook-tool-summary">`);
+    parts.push(`<summary><i class="fa-solid fa-screwdriver-wrench"></i> Tool: ${escapeHtml(grouped)}</summary>`);
+    parts.push(`<div class="stoolbook-tool-details">`);
 
     for (const inv of invocations) {
-        html += `<div class="stoolbook-tool-invocation">\n`;
+        parts.push(`<div class="stoolbook-tool-invocation">`);
 
         const params = tryParseJSON(inv.parameters);
         const paramsStr = typeof params === 'object' ? JSON.stringify(params, null, 2) : String(params);
-        html += `<div class="stoolbook-tool-label">Parameters</div>\n`;
-        html += `<pre><code class="language-json">${escapeHtml(paramsStr)}</code></pre>\n`;
+        parts.push(`<div class="stoolbook-tool-label">Parameters</div>`);
+        parts.push(`<pre><code class="language-json">${escapeHtml(paramsStr)}</code></pre>`);
 
         const result = tryParseJSON(inv.result);
         const resultStr = typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result);
-        html += `<div class="stoolbook-tool-label">Result</div>\n`;
-        html += `<pre><code class="language-json">${escapeHtml(resultStr)}</code></pre>\n`;
+        parts.push(`<div class="stoolbook-tool-label">Result</div>`);
+        parts.push(`<pre><code class="language-json">${escapeHtml(resultStr)}</code></pre>`);
 
-        html += `</div>\n`;
+        parts.push(`</div>`);
     }
 
-    html += `</div>\n</details>`;
-    return html;
+    parts.push(`</div></details>`);
+    // 拼成一行，前后加空行使 Showdown 识别为 HTML block
+    return parts.join('');
 }
 
 /**
@@ -786,11 +797,14 @@ function buildToolSummaryText(invocations) {
  */
 function mergeTurnInChat(chat, turn) {
     const container = chat[turn.startIdx];
-    if (container.extra?.stoolbook_merged) return [];
+    // 注意：不再因 stoolbook_merged 提前退出——swipe 重新生成后需要重新合并
 
     const mesParts = [];
     const reasoningParts = [];
     const reasoningDisplayParts = [];
+
+    // 若容器已合并过（swipe 重新生成），reasoning_display_text 是旧 swipe 的 HTML，需跳过
+    const isRemerge = !!container.extra?.stoolbook_merged;
 
     for (const part of turn.parts) {
         const msg = chat[part.idx];
@@ -801,11 +815,13 @@ function mergeTurnInChat(chat, turn) {
             }
             if (msg.extra?.reasoning) {
                 reasoningParts.push(msg.extra.reasoning);
-                // 对应的显示文本：如果有 reasoning_display_text 就用它，否则同原始文本
-                reasoningDisplayParts.push(msg.extra.reasoning_display_text ?? msg.extra.reasoning);
+                // 对已合并容器的 reasoning_display_text 是旧 swipe 的内容，直接用 reasoning 原文
+                const displayReasoning = (msg === container && isRemerge)
+                    ? msg.extra.reasoning
+                    : (msg.extra.reasoning_display_text ?? msg.extra.reasoning);
+                reasoningDisplayParts.push(displayReasoning);
             }
-        } else if (part.type === 'tool') {
-            // 工具调用作为压缩行嵌入 reasoning
+        } else if (part.type === 'tool') {            // 工具调用作为压缩行嵌入 reasoning
             reasoningParts.push(buildToolSummaryText(msg.extra.tool_invocations));
             reasoningDisplayParts.push(buildToolSummaryHtml(msg.extra.tool_invocations));
         }
@@ -817,6 +833,8 @@ function mergeTurnInChat(chat, turn) {
     container.extra.reasoning = reasoningParts.join('\n\n');
     container.extra.reasoning_display_text = reasoningDisplayParts.join('\n\n');
     container.extra.stoolbook_merged = true;
+    // 清除可能残留的旧 display_text，避免 SillyTavern 优先使用它覆盖 mes
+    delete container.extra.display_text;
 
     // 同步当前 swipe
     if (Array.isArray(container.swipes) && typeof container.swipe_id === 'number' && container.swipe_id >= 0) {
@@ -826,6 +844,8 @@ function mergeTurnInChat(chat, turn) {
             if (!info.extra) info.extra = {};
             info.extra.reasoning = container.extra.reasoning;
             info.extra.reasoning_display_text = container.extra.reasoning_display_text;
+            info.extra.stoolbook_merged = true;
+            delete info.extra.display_text;
         }
     }
 
@@ -1062,6 +1082,363 @@ function passbackReasoningContent(data) {
     }
 }
 
+// ============================================================
+// 无缝工具循环 (Seamless Tool Loop)
+// 通过 override ToolManager 方法 + continue 预填充实现
+// ============================================================
+
+const SEAMLESS_LIMIT = 10;
+
+/** seamless 状态 */
+let seamlessActive = false;
+let seamlessDepth = 0;
+let lastHadToolCalls = false;
+let toolResultsInOrder = [];
+let pendingInvocations = [];
+/** 每轮完整响应记录：{ extra, calls, results, invocations } */
+let turnHistory = [];
+/** 是否临时开启了 continue_prefill */
+let prefillWasForced = false;
+/** 从 invokeFunctionTools 的 reasoningText 参数捕获的 reasoning（非流式直接来自 API 响应） */
+let lastCapturedReasoning = null;
+
+/** 原始 ToolManager 方法引用（APP_READY 时绑定） */
+let _origHasToolCalls = null;
+let _origIsStealthTool = null;
+let _origInvokeFunctionTool = null;
+let _origInvokeFunctionTools = null;
+let _origCanPerformToolCalls = null;
+
+/**
+ * 安装 ToolManager 的五个 override
+ */
+function installSeamlessOverrides() {
+    const { ToolManager } = SillyTavern.getContext();
+
+    _origHasToolCalls = ToolManager.hasToolCalls.bind(ToolManager);
+    _origIsStealthTool = ToolManager.isStealthTool.bind(ToolManager);
+    _origInvokeFunctionTool = ToolManager.invokeFunctionTool.bind(ToolManager);
+    _origInvokeFunctionTools = ToolManager.invokeFunctionTools.bind(ToolManager);
+    _origCanPerformToolCalls = ToolManager.canPerformToolCalls.bind(ToolManager);
+
+    // 1. hasToolCalls: 捕获工具调用数据，对 ST 隐藏
+    ToolManager.hasToolCalls = function (data) {
+        const has = _origHasToolCalls(data);
+        if (seamlessActive && has) {
+            lastHadToolCalls = true;
+            debugLog('seamless hasToolCalls: 检测到工具调用，返回 false');
+            return false;
+        }
+        return has;
+    };
+
+    // 2. isStealthTool: seamless 时全部静默
+    ToolManager.isStealthTool = function (name) {
+        if (seamlessActive) return true;
+        return _origIsStealthTool(name);
+    };
+
+    // 3. invokeFunctionTools (复数): 捕获 reasoningText（非流式下直接来自 API 响应）
+    //    绕过 saveReply 的 swipe bug——该 bug 在有前置 swipe 时可能不更新 extra.reasoning
+    ToolManager.invokeFunctionTools = async function (data, opts = {}) {
+        if (seamlessActive && opts?.reasoningText) {
+            lastCapturedReasoning = opts.reasoningText;
+            debugLog(`seamless invokeFunctionTools: 捕获 reasoningText (${opts.reasoningText.length}c)`);
+        }
+        return _origInvokeFunctionTools(data, opts);
+    };
+
+    // 4. invokeFunctionTool (单数): 捕获每个工具的名字、参数和实际返回值
+    //    这里的 name/params 已经是 #getToolCallsFromData 规范化后的，
+    //    不受 API 原始格式差异影响
+    ToolManager.invokeFunctionTool = async function (name, params) {
+        const result = await _origInvokeFunctionTool(name, params);
+        if (seamlessActive && !(result instanceof Error)) {
+            toolResultsInOrder.push({
+                name,
+                displayName: ToolManager.getDisplayName(name),
+                params,
+                result,
+            });
+            debugLog(`seamless invokeFunctionTool: ${name} → 结果已捕获`);
+        }
+        return result;
+    };
+
+    // 5. canPerformToolCalls: continue 类型也允许工具检测
+    ToolManager.canPerformToolCalls = function (type, ...args) {
+        if (seamlessActive && type === 'continue') {
+            return _origCanPerformToolCalls('normal', ...args);
+        }
+        return _origCanPerformToolCalls(type, ...args);
+    };
+
+    debugLog('seamless overrides 已安装');
+}
+
+/**
+ * 将一轮捕获的 tool calls + results 记录到 turnHistory
+ * 同时保存当前消息的 reasoning 和 signature
+ */
+function recordTurnToHistory(results) {
+    const { chat } = SillyTavern.getContext();
+    const lastMsg = chat[chat.length - 1];
+    const extra = lastMsg?.extra ? structuredClone(lastMsg.extra) : {};
+
+    // 非流式 + swipe 场景下 saveReply 可能因原生 bug 未正确写入 extra.reasoning
+    // （swipe_id 对齐条件不满足时只更新 mes，不更新 reasoning）
+    // 优先使用从 invokeFunctionTools 捕获的 reasoningText（直接来自 API 响应）
+    if (lastCapturedReasoning) {
+        extra.reasoning = lastCapturedReasoning;
+        lastCapturedReasoning = null;
+    }
+
+    const calls = [];
+    const toolResults = [];
+    const invocations = [];
+
+    for (let i = 0; i < results.length; i++) {
+        const captured = results[i]; // { name, displayName, params, result } 从 invokeFunctionTool 捕获
+        const id = `stb_${seamlessDepth}_${i}`;
+        const name = captured.name || 'unknown';
+        const displayName = captured.displayName || name;
+        const args = captured.params ?? '';
+        const argsStr = typeof args === 'string' ? args : JSON.stringify(args);
+
+        calls.push({ id, type: 'function', function: { name, arguments: argsStr } });
+
+        const rawResult = captured.result;
+        const content = rawResult instanceof Error
+            ? rawResult.message
+            : (rawResult == null ? '' : (typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult)));
+        toolResults.push({ id, name, content });
+
+        invocations.push({ id, displayName, name, parameters: argsStr, result: content });
+    }
+
+    turnHistory.push({ extra, calls, results: toolResults, invocations });
+    pendingInvocations.push(...invocations);
+
+    debugLog(`seamless: 记录第 ${turnHistory.length} 轮, reasoning=${(extra.reasoning || '').length}c, signature=${!!extra.reasoning_signature}, ${calls.length} calls`);
+}
+
+/**
+ * 将 turnHistory 中所有轮次的 reasoning + 工具摘要合并写入最终消息
+ */
+function finalizeSeamlessReasoning() {
+    const { chat } = SillyTavern.getContext();
+    if (!chat?.length) return;
+
+    let lastAssistantIdx = -1;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (!chat[i].is_user && !chat[i].is_system) { lastAssistantIdx = i; break; }
+    }
+    if (lastAssistantIdx < 0) return;
+
+    const msg = chat[lastAssistantIdx];
+
+    // 最后一轮续写产生的 reasoning（最终消息上的）
+    const finalReasoning = msg.extra?.reasoning || '';
+
+    // 如果没有历史轮次，无需合并
+    if (turnHistory.length === 0) return;
+
+    // 构建合并后的 reasoning 和 display
+    // 顺序：[轮1 reasoning] [轮1 工具摘要] [轮2 reasoning] [轮2 工具摘要] ... [最终 reasoning]
+    const reasoningParts = [];
+    const displayParts = [];
+
+    for (const turn of turnHistory) {
+        const reasoning = turn.extra?.reasoning || '';
+        if (reasoning) {
+            reasoningParts.push(reasoning);
+            displayParts.push(reasoning);
+        }
+        if (turn.invocations.length > 0) {
+            reasoningParts.push(buildToolSummaryText(turn.invocations));
+            displayParts.push(buildToolSummaryHtml(turn.invocations));
+        }
+    }
+
+    // 追加最终续写的 reasoning
+    if (finalReasoning) {
+        reasoningParts.push(finalReasoning);
+        displayParts.push(finalReasoning);
+    }
+
+    if (!msg.extra) msg.extra = {};
+    msg.extra.reasoning = reasoningParts.join('\n\n');
+    msg.extra.reasoning_display_text = displayParts.join('\n\n');
+    msg.extra.stoolbook_merged = true;
+    delete msg.extra.display_text;
+
+    // 保留第一轮的 signature（如果有）
+    const firstSignature = turnHistory[0]?.extra?.reasoning_signature;
+    if (firstSignature && !msg.extra.reasoning_signature) {
+        msg.extra.reasoning_signature = firstSignature;
+    }
+
+    // 同步 swipe
+    if (Array.isArray(msg.swipes) && typeof msg.swipe_id === 'number' && msg.swipe_id >= 0) {
+        if (Array.isArray(msg.swipe_info) && msg.swipe_info[msg.swipe_id]) {
+            const info = msg.swipe_info[msg.swipe_id];
+            if (!info.extra) info.extra = {};
+            info.extra.reasoning = msg.extra.reasoning;
+            info.extra.reasoning_display_text = msg.extra.reasoning_display_text;
+            info.extra.stoolbook_merged = true;
+            delete info.extra.display_text;
+        }
+    }
+
+    debugLog(`seamless: reasoning 合并完成, ${turnHistory.length} 轮 + 最终, ${pendingInvocations.length} 个工具调用`);
+}
+
+/**
+ * 清理 seamless 状态，恢复临时修改的设置
+ */
+function resetSeamlessState() {
+    // 恢复 continue_prefill
+    if (prefillWasForced) {
+        const oai = SillyTavern.getContext().chatCompletionSettings;
+        if (oai) oai.continue_prefill = false;
+        prefillWasForced = false;
+        debugLog('seamless: 已恢复 continue_prefill = false');
+    }
+    seamlessActive = false;
+    seamlessDepth = 0;
+    lastHadToolCalls = false;
+    lastCapturedReasoning = null;
+    toolResultsInOrder = [];
+    pendingInvocations = [];
+    turnHistory = [];
+}
+
+/**
+ * 确保 continue_prefill 已开启（临时）
+ */
+function ensureContinuePrefill() {
+    const oai = SillyTavern.getContext().chatCompletionSettings;
+    if (oai && !oai.continue_prefill) {
+        oai.continue_prefill = true;
+        prefillWasForced = true;
+        debugLog('seamless: 临时开启 continue_prefill');
+    }
+}
+
+/**
+ * GENERATION_ENDED 中的 seamless 处理
+ */
+async function onSeamlessGenerationEnded() {
+    if (!seamlessActive) return;
+
+    const context = SillyTavern.getContext();
+
+    if (lastHadToolCalls && toolResultsInOrder.length > 0 && seamlessDepth < SEAMLESS_LIMIT) {
+        seamlessDepth++;
+
+        // 记录本轮完整响应（reasoning + signature + tool calls + results）
+        recordTurnToHistory(toolResultsInOrder);
+
+        // 清空本轮捕获
+        lastHadToolCalls = false;
+        toolResultsInOrder = [];
+
+        // 清掉消息上的 reasoning 相关字段，防止 native continue 的
+        // reasoning 处理 bug（Case 1：有 reasoning 无 content 时会错乱）
+        // turnHistory 已保存完整 extra，这里清除后 continue 以干净状态启动
+        const { chat } = context;
+        const lastMsg = chat[chat.length - 1];
+        if (lastMsg?.extra) {
+            lastMsg.extra.reasoning = '';
+            lastMsg.extra.reasoning_duration = null;
+            lastMsg.extra.reasoning_type = null;
+            lastMsg.extra.reasoning_signature = null;
+            lastMsg.extra.reasoning_display_text = null;
+        }
+
+        // 确保 continue_prefill 开启
+        ensureContinuePrefill();
+
+        debugLog(`seamless: 第 ${seamlessDepth} 轮，触发 continue 续写`);
+
+        // 必须等 finishGenerating 的 `streamingProcessor = null` 执行完毕。
+        // GENERATION_ENDED 从 onFinishStreaming 内部的 markUIGenStopped 同步 fire，
+        // 但 `streamingProcessor = null` 在 onFinishStreaming 返回后才作为 await 续体执行。
+        // 唯一可靠的判据：streamingProcessor 变为 null。
+        const pollAndContinue = () => {
+            if (SillyTavern.getContext().streamingProcessor !== null) {
+                setTimeout(pollAndContinue, 10);
+                return;
+            }
+            debugLog('seamless: streamingProcessor 已清理，启动 continue');
+            context.generate('continue', { automatic_trigger: true }).catch((/** @type {*} */ e) => {
+                console.error(`[${MODULE_NAME}] seamless continue 失败:`, e);
+                toastr.error(`Seamless continue 失败: ${e?.message ?? e}`, MODULE_NAME);
+                resetSeamlessState();
+            });
+        };
+        setTimeout(pollAndContinue, 0);
+    } else {
+        debugLog(`seamless: 循环结束 (depth=${seamlessDepth})`);
+
+        finalizeSeamlessReasoning();
+
+        try {
+            await context.saveChat();
+        } catch (/** @type {*} */ e) {
+            console.error(`[${MODULE_NAME}] seamless save 失败:`, e);
+        }
+
+        resetSeamlessState();
+    }
+}
+
+/**
+ * CHAT_COMPLETION_PROMPT_READY 中的 seamless prompt 注入
+ * 注入所有历史轮次的 assistant(reasoning + tool_calls) + tool(results)
+ * 不依赖 chat 中的消息——全部来自内部 turnHistory
+ */
+function onSeamlessPromptReady(data) {
+    if (!seamlessActive || turnHistory.length === 0 || data?.dryRun) return;
+
+    const chat = data.chat;
+    if (!chat?.length) return;
+
+    // 原生 continue_prefill 在 populateChatCompletion 中已将最后一条 assistant 从历史中
+    // shift 走并作为 controlPrompt 追加到末尾。但如果内容为空，getChat() 会把它过滤掉
+    // （条件 item.content || item.tool_calls，空字符串 falsy）。
+    // 所以：有原生 prefill 就弹掉替换，没有也没关系——我们始终自己加。
+    // 不 splice 历史中的 assistant，continue_prefill 已经抽走了。
+    if (chat[chat.length - 1]?.role === 'assistant') {
+        chat.pop();
+    }
+
+    // 注入所有历史轮次
+    for (const turn of turnHistory) {
+        const assistantMsg = Object.assign(
+            { role: 'assistant', content: '', tool_calls: turn.calls },
+            turn.extra?.reasoning ? { reasoning: turn.extra.reasoning } : {},
+            turn.extra?.reasoning_signature ? { signature: turn.extra.reasoning_signature } : {},
+            turn.extra?.reasoning_content ? { reasoning_content: turn.extra.reasoning_content } : {},
+        );
+        chat.push(assistantMsg);
+
+        for (const r of turn.results) {
+            chat.push({
+                role: 'tool',
+                tool_call_id: r.id,
+                content: r.content,
+            });
+        }
+    }
+
+    // 始终自己加空 assistant 作为续写起点
+    // （原生 prefill 可能缺失，我们自己补上）
+    chat.push({ role: 'assistant', content: '' });
+
+    debugLog(`seamless prompt 注入: ${turnHistory.length} 轮历史, 共 ${pendingInvocations.length} 个工具调用`);
+}
+
 // ---------- Debug mode: 5-click 解锁 ----------
 
 function setupDebugUnlock() {
@@ -1104,16 +1481,34 @@ function setupDebugUnlock() {
         const settingsHtml = await renderExtensionTemplateAsync(EXTENSION_PATH, 'settings');
         $('#extensions_settings').append(settingsHtml);
 
-        // 绑定: 合并开关
         const settings = getSettings();
+
+        // ---- seamless 联动函数 ----
+        function syncSeamlessUI() {
+            const seamless = getSettings().seamlessToolLoop;
+            const $merge = $('#stoolbook_turn_merging');
+            const $pin = $('#stoolbook_pin_newest_turn');
+            $merge.prop('disabled', seamless);
+            $pin.prop('disabled', seamless);
+            $('.stoolbook_sub_option').toggleClass('stoolbook_disabled', seamless);
+        }
+
+        // 绑定: 无缝工具循环
+        $('#stoolbook_seamless_tool_loop').prop('checked', settings.seamlessToolLoop);
+        $('#stoolbook_seamless_tool_loop').on('change', function () {
+            const ext = SillyTavern.getContext().extensionSettings;
+            ext[MODULE_NAME].seamlessToolLoop = $(this).prop('checked');
+            saveSettingsDebounced();
+            syncSeamlessUI();
+        });
+
+        // 绑定: 合并开关
         $('#stoolbook_turn_merging').prop('checked', settings.turnMerging);
         $('#stoolbook_turn_merging').on('change', function () {
             const ext = SillyTavern.getContext().extensionSettings;
             ext[MODULE_NAME].turnMerging = $(this).prop('checked');
             saveSettingsDebounced();
-            if (ext[MODULE_NAME].turnMerging) {
-                scheduleMerge();
-            }
+            if (ext[MODULE_NAME].turnMerging) scheduleMerge();
         });
 
         // 绑定: 置底开关
@@ -1143,15 +1538,34 @@ function setupDebugUnlock() {
             saveSettingsDebounced();
         });
 
-        // 5-click 解锁 debug
+        // UI 初始化
+        syncSeamlessUI();
         setupDebugUnlock();
+
+        // 手动处理工具摘要折叠/展开
+        // messageFormatting 的 Showdown 会在 <details> 内插入 <br>/<p>，
+        // 可能破坏原生 toggle；DOMPurify 给 class 加 custom- 前缀。
+        // 用委托事件兜底确保 toggle 始终工作。
+        $(document).on('click', '[class*="stoolbook-tool-summary"] > summary', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const details = $(this).closest('details');
+            if (details.attr('open') !== undefined) {
+                details.removeAttr('open');
+            } else {
+                details.attr('open', '');
+            }
+        });
+
+        // 安装 seamless ToolManager overrides
+        installSeamlessOverrides();
 
         // 原有世界书 UI
         scanExistingEntries();
         observeEntries();
         observeBody();
 
-        if (getSettings().turnMerging) {
+        if (getSettings().turnMerging && !getSettings().seamlessToolLoop) {
             scheduleMerge();
         }
     });
@@ -1162,40 +1576,78 @@ function setupDebugUnlock() {
     // ---- 回合合并事件钩子 ----
 
     eventSource.on(event_types.GENERATION_STARTED, (_type, _opts, dryRun) => {
-        if (dryRun) {
-            debugLog('事件: GENERATION_STARTED (dryRun, 忽略)');
-            return;
+        if (dryRun) return;
+
+        const s = getSettings();
+
+        // seamless: 首次进入时激活（续写触发的不重置）
+        if (s.seamlessToolLoop && !seamlessActive) {
+            seamlessActive = true;
+            resetSeamlessState();
+            seamlessActive = true; // resetSeamlessState 会清掉，重新设
+            debugLog('seamless: 激活');
         }
-        debugLog('事件: GENERATION_STARTED');
-        isGenerating = true;
-        cancelMerge();
+
+        // 非 seamless 模式的原有逻辑
+        if (!s.seamlessToolLoop) {
+            isGenerating = true;
+            cancelMerge();
+        }
     });
 
-    eventSource.on(event_types.GENERATION_ENDED, () => {
+    eventSource.on(event_types.GENERATION_ENDED, async () => {
         debugLog('事件: GENERATION_ENDED');
+
+        // seamless 模式优先
+        if (seamlessActive && getSettings().seamlessToolLoop) {
+            await onSeamlessGenerationEnded();
+            return;
+        }
+
+        // 非 seamless 的原有逻辑
         isGenerating = false;
-        scheduleMerge();
+        if (!getSettings().seamlessToolLoop) {
+            scheduleMerge();
+        }
     });
 
     eventSource.on(event_types.GENERATION_STOPPED, () => {
         debugLog('事件: GENERATION_STOPPED');
+
+        // seamless: 用户手动停止 → 清理状态
+        if (seamlessActive) {
+            debugLog('seamless: 用户停止，重置状态');
+            resetSeamlessState();
+        }
+
         isGenerating = false;
-        scheduleMerge();
+        if (!getSettings().seamlessToolLoop) {
+            scheduleMerge();
+        }
     });
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
         debugLog('事件: CHAT_CHANGED');
-        scheduleMerge();
+        if (!getSettings().seamlessToolLoop) {
+            scheduleMerge();
+        }
     });
 
-    // ---- 最新回合置底 ----
+    // ---- Prompt 处理 ----
 
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (data) => {
         if (data?.dryRun) return;
+
+        // seamless: 注入 tool_calls + tool results
+        onSeamlessPromptReady(data);
+
+        // reasoning passback
         if (getSettings().reasoningPassback) {
             passbackReasoningContent(data);
         }
-        if (getSettings().pinNewestTurn) {
+
+        // 置底（seamless 开启时不需要）
+        if (!getSettings().seamlessToolLoop && getSettings().pinNewestTurn) {
             pinNewestTurnToBottom(data);
         }
     });
