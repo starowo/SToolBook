@@ -997,23 +997,66 @@ function pinNewestTurnToBottom(data) {
 // ---------- DeepSeek reasoning_content 回传修复 ----------
 
 /**
- * 将 tool_calls 消息上的 reasoning 字段映射为 reasoning_content，
- * 使 DeepSeek reasoner 的思考内容能正确回传给 API。
+ * 为 data.chat 中带 tool_calls 的消息补充 reasoning_content。
+ * prompt 构建管线不会把 extra.reasoning 带到 data.chat 的 message 上，
+ * 所以需要回到原始 chat 数组，通过 tool_call_id 匹配取出真实 reasoning。
  * 后端 addReasoningContentToToolCalls 检查 'reasoning_content' in message，
- * 已存在则跳过，因此我们在前端设好真实值后后端不会覆盖为空字符串。
- * 对非 DeepSeek API 无副作用（未知字段会被忽略）。
+ * 已存在则跳过，因此前端先设好真实值后后端不会覆盖为空字符串。
  */
 function passbackReasoningContent(data) {
     const chat = data?.chat;
     if (!chat?.length) return;
 
-    let count = 0;
-    for (const msg of chat) {
-        if (msg.tool_calls && !('reasoning_content' in msg)) {
-            msg.reasoning_content = msg.reasoning || '';
-            count++;
+    const realChat = SillyTavern.getContext().chat;
+    if (!realChat?.length) return;
+
+    // 从原始 chat 构建映射：tool_invocation.id → 发起调用的 assistant 消息的 reasoning
+    const reasoningByToolCallId = new Map();
+    for (let i = 0; i < realChat.length; i++) {
+        const msg = realChat[i];
+        // 跳过非 assistant 消息
+        if (msg.is_user || msg.is_system) continue;
+        const reasoning = msg.extra?.reasoning;
+        if (!reasoning) continue;
+
+        // 下一条是工具系统消息？用其 tool_invocations 的 id 建立映射
+        const next = realChat[i + 1];
+        if (next?.is_system && Array.isArray(next.extra?.tool_invocations)) {
+            for (const inv of next.extra.tool_invocations) {
+                if (inv.id) reasoningByToolCallId.set(inv.id, reasoning);
+            }
+        }
+
+        // 也检查 tool_invocations 自身携带的 reasoning（作为备选）
+        if (next?.is_system && Array.isArray(next.extra?.tool_invocations)) {
+            for (const inv of next.extra.tool_invocations) {
+                if (inv.id && inv.reasoning && !reasoningByToolCallId.has(inv.id)) {
+                    reasoningByToolCallId.set(inv.id, inv.reasoning);
+                }
+            }
         }
     }
+
+    // 遍历 data.chat，为带 tool_calls 的消息设置 reasoning_content
+    let count = 0;
+    for (const msg of chat) {
+        if (!msg.tool_calls || 'reasoning_content' in msg) continue;
+
+        // 优先用 data.chat 上已有的 reasoning（万一管线将来修复了）
+        let reasoning = msg.reasoning || '';
+
+        // 没有则通过 tool_call_id 从原始 chat 查找
+        if (!reasoning && msg.tool_calls.length > 0) {
+            for (const tc of msg.tool_calls) {
+                const found = reasoningByToolCallId.get(tc.id);
+                if (found) { reasoning = found; break; }
+            }
+        }
+
+        msg.reasoning_content = reasoning;
+        count++;
+    }
+
     if (count > 0) {
         debugLog(`passbackReasoningContent: 已为 ${count} 条 tool_calls 消息设置 reasoning_content`);
     }
