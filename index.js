@@ -889,7 +889,7 @@ function syncSeamlessStopRequest() {
 
 function finalizeSeamlessReasoning() {
     const { chat } = SillyTavern.getContext();
-    if (!chat?.length) return;
+    if (!chat?.length) return null;
 
     let lastAssistantIdx = -1;
     for (let i = chat.length - 1; i >= 0; i--) {
@@ -898,11 +898,11 @@ function finalizeSeamlessReasoning() {
             break;
         }
     }
-    if (lastAssistantIdx < 0) return;
+    if (lastAssistantIdx < 0) return null;
 
     const msg = chat[lastAssistantIdx];
     const finalReasoning = msg.extra?.reasoning || '';
-    if (turnHistory.length === 0) return;
+    if (turnHistory.length === 0) return null;
 
     const reasoningParts = [];
     const displayParts = [];
@@ -947,6 +947,15 @@ function finalizeSeamlessReasoning() {
     }
 
     debugLog(`seamless: reasoning 合并完成, ${turnHistory.length} 轮 + 最终, ${pendingInvocations.length} 个工具调用`);
+    return lastAssistantIdx;
+}
+
+function refreshSeamlessReasoningMessage(messageId) {
+    const context = SillyTavern.getContext();
+    const msg = context.chat?.[messageId];
+    if (!msg) return;
+
+    context.updateMessageBlock(messageId, msg, { rerenderMessage: false });
 }
 
 function resetSeamlessState() {
@@ -1389,11 +1398,20 @@ function setupDebugUnlock() {
         }
     });
 
-    eventSource.on(event_types.GENERATION_STOPPED, () => {
+    eventSource.on(event_types.GENERATION_STOPPED, async () => {
         debugLog('事件: GENERATION_STOPPED');
 
         if (seamlessActive) {
-            debugLog('seamless: 用户停止，重置状态');
+            debugLog('seamless: 用户停止，合并已完成的 reasoning 后重置状态');
+            const messageId = finalizeSeamlessReasoning();
+            if (messageId !== null) {
+                try {
+                    refreshSeamlessReasoningMessage(messageId);
+                    await SillyTavern.getContext().saveChat();
+                } catch (e) {
+                    console.error(`[${MODULE_NAME}] seamless stopped save 失败:`, e);
+                }
+            }
             resetSeamlessState();
         }
 
