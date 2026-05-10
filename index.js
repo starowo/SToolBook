@@ -6,6 +6,7 @@
 
 import { MODULE_NAME } from './constants.js';
 import { loadToolFuncData, saveToolFuncData } from './tool-storage.js';
+import { updateReasoningUI } from '../../../reasoning.js';
 import {
     beginToolBatch,
     beginToolInvocation,
@@ -889,6 +890,13 @@ function finalizeSeamlessReasoning() {
             info.extra.stoolbook_merged = true;
             delete info.extra.display_text;
         }
+    }
+
+    try {
+        SillyTavern.getContext().updateMessageBlock(lastAssistantIdx, msg, { rerenderMessage: true });
+        updateReasoningUI(lastAssistantIdx);
+    } catch (e) {
+        console.error(`[${MODULE_NAME}] seamless reasoning UI 刷新失败:`, e);
     }
 
     debugLog(`seamless: reasoning 合并完成, ${turnHistory.length} 轮 + 最终, ${pendingInvocations.length} 个工具调用`);
