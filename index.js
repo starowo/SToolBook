@@ -6,7 +6,7 @@
 
 import { MODULE_NAME } from './constants.js';
 import { loadToolFuncData, saveToolFuncData } from './tool-storage.js';
-import { ReasoningHandler } from '../../../reasoning.js';
+import { ReasoningHandler, ReasoningState } from '../../../reasoning.js';
 import {
     beginToolBatch,
     beginToolInvocation,
@@ -803,13 +803,18 @@ function installSeamlessReasoningDisplayPatch() {
         }
 
         const currentDisplay = this.reasoningDisplayText;
+        const currentState = this.state;
         const current = currentDisplay ?? this.reasoning ?? '';
         this.reasoningDisplayText = current ? `${prefix}\n\n${current}` : prefix;
+        if (this.state === ReasoningState.None) {
+            this.state = ReasoningState.Done;
+        }
 
         try {
             return originalReasoningUpdateDom.call(this, messageId);
         } finally {
             this.reasoningDisplayText = currentDisplay;
+            this.state = currentState;
         }
     };
 }
