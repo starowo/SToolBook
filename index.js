@@ -6,6 +6,7 @@
 
 import { MODULE_NAME } from './constants.js';
 import { loadToolFuncData, saveToolFuncData } from './tool-storage.js';
+import { ReasoningHandler, ReasoningState } from '../../../reasoning.js';
 import {
     beginToolBatch,
     beginToolInvocation,
@@ -55,6 +56,7 @@ let prefillWasForced = false;
 let lastCapturedReasoning = null;
 /** 工具主动请求终止 seamless 后续 continue */
 let seamlessStopAfterCurrentTurn = false;
+let originalReasoningUpdateDom = null;
 
 /** 原始 ToolManager 方法引用（APP_READY 时绑定） */
 let _origHasToolCalls = null;
@@ -764,6 +766,59 @@ function installSeamlessOverrides() {
     debugLog('seamless overrides 已安装');
 }
 
+function buildSeamlessReasoningDisplayPrefix() {
+    const parts = [];
+
+    for (const turn of turnHistory) {
+        const reasoning = turn.extra?.reasoning_display_text || turn.extra?.reasoning || '';
+        if (reasoning) {
+            parts.push(reasoning);
+        }
+        if (turn.invocations.length > 0) {
+            parts.push(buildToolSummaryHtml(turn.invocations));
+        }
+    }
+
+    return parts.join('\n\n');
+}
+
+function shouldApplySeamlessReasoningDisplay(messageId) {
+    const { chat } = SillyTavern.getContext();
+    const message = chat?.[messageId];
+    return Boolean(seamlessActive && turnHistory.length > 0 && message && !message.is_user && !message.is_system && messageId === chat.length - 1);
+}
+
+function installSeamlessReasoningDisplayPatch() {
+    if (originalReasoningUpdateDom) return;
+
+    originalReasoningUpdateDom = ReasoningHandler.prototype.updateDom;
+    ReasoningHandler.prototype.updateDom = function (messageId) {
+        if (!shouldApplySeamlessReasoningDisplay(messageId)) {
+            return originalReasoningUpdateDom.call(this, messageId);
+        }
+
+        const prefix = buildSeamlessReasoningDisplayPrefix();
+        if (!prefix) {
+            return originalReasoningUpdateDom.call(this, messageId);
+        }
+
+        const currentDisplay = this.reasoningDisplayText;
+        const currentState = this.state;
+        const current = currentDisplay ?? this.reasoning ?? '';
+        this.reasoningDisplayText = current ? `${prefix}\n\n${current}` : prefix;
+        if (this.state === ReasoningState.None) {
+            this.state = ReasoningState.Done;
+        }
+
+        try {
+            return originalReasoningUpdateDom.call(this, messageId);
+        } finally {
+            this.reasoningDisplayText = currentDisplay;
+            this.state = currentState;
+        }
+    };
+}
+
 function recordTurnToHistory(results) {
     const { chat } = SillyTavern.getContext();
     const lastMsg = chat[chat.length - 1];
@@ -834,7 +889,7 @@ function syncSeamlessStopRequest() {
 
 function finalizeSeamlessReasoning() {
     const { chat } = SillyTavern.getContext();
-    if (!chat?.length) return;
+    if (!chat?.length) return null;
 
     let lastAssistantIdx = -1;
     for (let i = chat.length - 1; i >= 0; i--) {
@@ -843,11 +898,11 @@ function finalizeSeamlessReasoning() {
             break;
         }
     }
-    if (lastAssistantIdx < 0) return;
+    if (lastAssistantIdx < 0) return null;
 
     const msg = chat[lastAssistantIdx];
     const finalReasoning = msg.extra?.reasoning || '';
-    if (turnHistory.length === 0) return;
+    if (turnHistory.length === 0) return null;
 
     const reasoningParts = [];
     const displayParts = [];
@@ -892,6 +947,15 @@ function finalizeSeamlessReasoning() {
     }
 
     debugLog(`seamless: reasoning 合并完成, ${turnHistory.length} 轮 + 最终, ${pendingInvocations.length} 个工具调用`);
+    return lastAssistantIdx;
+}
+
+function refreshSeamlessReasoningMessage(messageId) {
+    const context = SillyTavern.getContext();
+    const msg = context.chat?.[messageId];
+    if (!msg) return;
+
+    context.updateMessageBlock(messageId, msg, { rerenderMessage: false });
 }
 
 function resetSeamlessState() {
@@ -1263,6 +1327,7 @@ function setupDebugUnlock() {
         });
 
         installSeamlessOverrides();
+        installSeamlessReasoningDisplayPatch();
         installGlobalPromptCompat();
         installGlobalToolApiBridge();
 
@@ -1333,11 +1398,20 @@ function setupDebugUnlock() {
         }
     });
 
-    eventSource.on(event_types.GENERATION_STOPPED, () => {
+    eventSource.on(event_types.GENERATION_STOPPED, async () => {
         debugLog('事件: GENERATION_STOPPED');
 
         if (seamlessActive) {
-            debugLog('seamless: 用户停止，重置状态');
+            debugLog('seamless: 用户停止，合并已完成的 reasoning 后重置状态');
+            const messageId = finalizeSeamlessReasoning();
+            if (messageId !== null) {
+                try {
+                    refreshSeamlessReasoningMessage(messageId);
+                    await SillyTavern.getContext().saveChat();
+                } catch (e) {
+                    console.error(`[${MODULE_NAME}] seamless stopped save 失败:`, e);
+                }
+            }
             resetSeamlessState();
         }
 
